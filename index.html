@@ -30,6 +30,11 @@
         .rec-active { background: #ff2e63 !important; animation: pulse 1s infinite; border-color: #ff2e63; }
         .cmd-list { font-size: 13px; background: #1a1a1a; padding: 5px; border-radius: 5px; margin-top: 5px; }
         .cmd-item { display: flex; justify-content: space-between; color: #ff9f43; padding: 4px 0; border-bottom: 1px dashed #333; }
+        .btn-tap { display:block; margin: 0 auto 15px; width: 130px; height: 130px; border-radius: 50%; background: #2d2d2d; color: #ff9f43; border: 3px solid #ff9f43; font-size: 22px; font-weight: bold; cursor: pointer; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
+        .btn-tap:active, .btn-tap.flash { background: #ff9f43; color: #121212; }
+        .tap-info { font-size: 12px; color: #aaa; margin-top: -10px; margin-bottom: 12px; }
+        select { background: #2d2d2d; border: 1px solid #444; color: white; padding: 8px; border-radius: 5px; font-size: 14px; margin-bottom: 8px; width: 100%; box-sizing: border-box; }
+        .row input { margin: 0; }
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
     </style>
 </head>
@@ -50,8 +55,26 @@
             <button class="btn-speed" onclick="changeBpm(5)">+5</button>
         </div>
 
+        <button class="btn-tap" id="tapBtn" onpointerdown="tapTempo(event)">TAP</button>
+        <div class="tap-info" id="tapInfo">Tocca 4 volte a tempo per impostare i BPM</div>
+
         <button class="btn-main" id="startBtn" onclick="toggleMetronome()">AVVIA</button>
         <button class="btn-next-live" onclick="prossimoBrano()">⏭️ PROSSIMO BRANO</button>
+    </div>
+
+    <div class="section">
+        <div class="section-title">🔊 Suono del Click</div>
+        <select id="soundTheme" onchange="salvaSuono()">
+            <option value="classico">Classico beep</option>
+            <option value="legno">Legno / Woodblock</option>
+            <option value="clave">Clave</option>
+            <option value="hihat">Hi-hat</option>
+            <option value="cowbell">Cowbell</option>
+            <option value="rimshot">Rimshot</option>
+            <option value="soft">Elettronico soft</option>
+        </select>
+        <label style="display:flex; align-items:center; gap:8px; font-size:14px;"><input type="checkbox" id="accentOn" onchange="salvaSuono()" style="width:auto; margin:0;"> Accento sul primo battito</label>
+        <button class="btn-action" style="margin-top:8px;" onclick="provaSuono()">▶️ Prova suono</button>
     </div>
 
     <div class="section">
@@ -73,6 +96,25 @@
         <div id="tempCmdsContainer" class="cmd-list">Nessun comando vocale pronto.</div>
     </div>
 
+    <div class="section">
+        <div class="section-title">3. Cambi di Tempo</div>
+        <div class="row">
+            <span style="font-size:13px;">Dalla battuta</span><input type="number" id="tcBar" value="9" min="2" style="width:65px;">
+            <span style="font-size:13px;">BPM</span><input type="number" id="tcBpm" value="130" style="width:70px;">
+        </div>
+        <div class="row">
+            <span style="font-size:13px;">Graduale in</span><input type="number" id="tcRamp" value="0" min="0" style="width:65px;"><span style="font-size:13px;">battute (0 = di colpo)</span>
+        </div>
+        <div class="row">
+            <button class="btn-action" style="flex:1; background:#10ac84; color:white; border:none;" onclick="aggiungiCambioTempo(false)">➕ Al brano nuovo</button>
+            <button class="btn-action" style="flex:1; background:#00adb5; color:white; border:none;" onclick="aggiungiCambioTempo(true)">➕ Al brano selezionato</button>
+        </div>
+        <div style="font-size:12px; color:#aaa;">Brano nuovo:</div>
+        <div id="tempTcContainer" class="cmd-list">Nessun cambio di tempo.</div>
+        <div style="font-size:12px; color:#aaa; margin-top:6px;">Brano selezionato:</div>
+        <div id="selTcContainer" class="cmd-list">Nessun cambio di tempo.</div>
+    </div>
+
     <button class="btn-action" style="width:100%; margin: 15px 0; background:#ff9f43; color:black; padding:12px; font-size:16px; border:none;" onclick="salvaBranoCompleto()">💾 SALVA BRANO IN SCALETTA</button>
 
     <div class="section">
@@ -87,11 +129,17 @@
 
     let mediaRecorder, audioChunks = [], ultimoAudioInBase64 = null;
     let comandiTemporanei = [];
+    let cambiTemporanei = [];
+    let suonoTema = localStorage.getItem('suono_v37') || 'classico';
+    let accentoOn = localStorage.getItem('accento_v37') !== '0';
+    let tapTimes = [];
     let scaletta = [];
 
     try { scaletta = JSON.parse(localStorage.getItem('scaletta_v37')) || []; } catch(e) { scaletta = []; }
     let idSelezionato = scaletta.length > 0 ? scaletta[0].id : null;
 
+    document.getElementById('soundTheme').value = suonoTema;
+    document.getElementById('accentOn').checked = accentoOn;
     renderScaletta();
     if (idSelezionato) caricaBrano(idSelezionato);
 
@@ -131,6 +179,7 @@
             resetConteggio();
             renderScaletta();
         }
+        renderCambiSelezionato();
     }
 
     function changeBpm(qta) {
@@ -152,10 +201,12 @@
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 mediaRecorder = new MediaRecorder(stream);
                 audioChunks = [];
-                mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+                mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
                 mediaRecorder.onstop = () => {
                     stream.getTracks().forEach(t => t.stop());
-                    const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+                    if (audioChunks.length === 0) { btn.innerText = "🎤 Registra Voce"; return alert("Registrazione vuota, riprova (parla almeno un secondo)."); }
+                    const tipo = (mediaRecorder.mimeType || (audioChunks[0] && audioChunks[0].type) || 'audio/webm');
+                    const audioBlob = new Blob(audioChunks, { type: tipo });
                     const reader = new FileReader();
                     reader.readAsDataURL(audioBlob);
                     reader.onloadend = () => {
@@ -164,7 +215,7 @@
                         setTimeout(() => { btn.innerText = "🎤 Registra Voce"; }, 2000);
                     };
                 };
-                mediaRecorder.start();
+                mediaRecorder.start(250);
                 btn.innerText = "🛑 STOP";
                 btn.classList.add('rec-active');
             } catch(err) { alert("Permetti l'uso del microfono al browser (icona accanto all'indirizzo) e riprova."); }
@@ -200,12 +251,14 @@
         const nome = document.getElementById('songName').value.trim();
         const bpm = parseInt(document.getElementById('songBpm').value);
         if (!nome || isNaN(bpm)) return alert("Inserisci Nome e BPM");
-        const nuovoBrano = { id: Date.now(), nome: nome, bpm: bpm, comandi: [...comandiTemporanei] };
+        const nuovoBrano = { id: Date.now(), nome: nome, bpm: bpm, comandi: [...comandiTemporanei], cambi: [...cambiTemporanei] };
         scaletta.push(nuovoBrano);
         salva();
         document.getElementById('songName').value = '';
         comandiTemporanei = [];
         aggiornaGraficaComandiTemporanei();
+        cambiTemporanei = [];
+        renderCambi(cambiTemporanei, 'tempTcContainer', 'cambiTemporanei');
         caricaBrano(nuovoBrano.id);
     }
 
@@ -218,36 +271,62 @@
             idSelezionato = null;
             document.getElementById('liveSongName').innerText = 'NESSUN BRANO';
             renderScaletta();
+            renderCambiSelezionato();
         }
     }
 
     function playClick(time) {
-        let osc = audioCtx.createOscillator();
-        let gain = audioCtx.createGain();
-        osc.connect(gain); gain.connect(audioCtx.destination);
-
+        suonaClick(time, currentBeatInMeasure === 0 && accentoOn);
         if (currentBeatInMeasure === 0) {
-            osc.frequency.setValueAtTime(1000, time);
             const branoAttuale = scaletta.find(b => b.id === idSelezionato);
             if (branoAttuale && branoAttuale.comandi) {
                 const comando = branoAttuale.comandi.find(c => c.battuta === currentMeasure);
-                if (comando) { riproduciVocale(comando.audio); }
+                if (comando) { riproduciVocale(comando.audio, time); }
             }
-        } else { osc.frequency.setValueAtTime(550, time); }
+        }
 
-        gain.gain.setValueAtTime(0.4, time);
-        gain.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
-        osc.start(time); osc.stop(time + 0.05);
-
-        const m = currentMeasure, b = currentBeatInMeasure + 1;
+        const m = currentMeasure, b = currentBeatInMeasure + 1, bpmOra = Math.round(tempoCorrente());
         setTimeout(() => {
             document.getElementById('liveBeat').innerText = `Battuta: ${m}.${b}`;
+            document.getElementById('liveBpm').innerText = bpmOra;
         }, Math.max(0, (time - audioCtx.currentTime) * 1000));
     }
 
-    function riproduciVocale(base64Audio) {
-        let audio = new Audio(base64Audio);
-        audio.play().catch(e => console.log(e));
+    // Cache: dataURL -> AudioBuffer decodificato (riprodotto nel AudioContext già sbloccato dal tasto AVVIA)
+    const bufferVocali = new Map();
+    function dataUrlToArrayBuffer(dataUrl) {
+        const b64 = dataUrl.split(',')[1] || '';
+        const bin = atob(b64); const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return bytes.buffer;
+    }
+    function decodificaVocale(dataUrl) {
+        if (!audioCtx || !dataUrl) return Promise.resolve(null);
+        if (bufferVocali.has(dataUrl)) return bufferVocali.get(dataUrl);
+        const p = new Promise((res, rej) => {
+            const ab = dataUrlToArrayBuffer(dataUrl);
+            const pr = audioCtx.decodeAudioData(ab, res, rej);
+            if (pr && pr.then) pr.then(res, rej);
+        }).catch(e => { console.log('decode fallita', e); bufferVocali.delete(dataUrl); return null; });
+        bufferVocali.set(dataUrl, p);
+        return p;
+    }
+    function precaricaVocali() {
+        const brano = scaletta.find(b => b.id === idSelezionato);
+        if (brano && brano.comandi) brano.comandi.forEach(c => decodificaVocale(c.audio));
+    }
+    function riproduciVocale(base64Audio, time) {
+        decodificaVocale(base64Audio).then(buf => {
+            if (buf) {
+                const src = audioCtx.createBufferSource();
+                const g = audioCtx.createGain(); g.gain.value = 1.0;
+                src.buffer = buf; src.connect(g); g.connect(audioCtx.destination);
+                src.start(Math.max(audioCtx.currentTime, time || 0));
+            } else {
+                const audio = new Audio(base64Audio);
+                audio.play().catch(e => console.log(e));
+            }
+        });
     }
 
     function scheduler() {
@@ -255,7 +334,7 @@
             playClick(nextNoteTime);
             currentBeatInMeasure++;
             if (currentBeatInMeasure >= beatsPerMeasure) { currentBeatInMeasure = 0; currentMeasure++; }
-            nextNoteTime += 60.0 / currentBpm;
+            nextNoteTime += 60.0 / tempoCorrente();
         }
         timerId = setTimeout(scheduler, 25);
     }
@@ -269,16 +348,152 @@
 
         if (isPlaying) {
             clearTimeout(timerId);
+            document.getElementById('liveBpm').innerText = currentBpm;
             btn.innerText = "AVVIA";
             btn.classList.remove('playing');
             isPlaying = false;
         } else {
             resetConteggio();
+            precaricaVocali();
             nextNoteTime = audioCtx.currentTime + 0.05;
             scheduler();
             btn.innerText = "STOP";
             btn.classList.add('playing');
             isPlaying = true;
+        }
+    }
+
+    // ===== CAMBI DI TEMPO =====
+    function cambiDelBrano() {
+        const b = scaletta.find(x => x.id === idSelezionato);
+        return (b && b.cambi) ? b.cambi : [];
+    }
+    // BPM alla posizione corrente (battuta + frazione), partendo dai BPM del brano
+    function tempoCorrente() {
+        const pos = currentMeasure + currentBeatInMeasure / beatsPerMeasure;
+        let bpm = currentBpm;
+        const lista = [...cambiDelBrano()].sort((a,b) => a.battuta - b.battuta);
+        for (const c of lista) {
+            const inizio = c.battuta, rampa = c.rampa || 0;
+            if (pos < inizio) break;
+            if (rampa > 0 && pos < inizio + rampa) { bpm = bpm + (c.bpm - bpm) * ((pos - inizio) / rampa); break; }
+            bpm = c.bpm;
+        }
+        return Math.max(30, Math.min(300, bpm));
+    }
+    function aggiungiCambioTempo(alSelezionato) {
+        const battuta = parseInt(document.getElementById('tcBar').value);
+        const bpm = parseInt(document.getElementById('tcBpm').value);
+        const rampa = Math.max(0, parseInt(document.getElementById('tcRamp').value) || 0);
+        if (isNaN(battuta) || battuta < 1) return alert("Metti una battuta valida");
+        if (isNaN(bpm) || bpm < 30 || bpm > 300) return alert("BPM tra 30 e 300");
+        const cambio = { battuta, bpm, rampa };
+        if (alSelezionato) {
+            const b = scaletta.find(x => x.id === idSelezionato);
+            if (!b) return alert("Nessun brano selezionato in scaletta");
+            if (!b.cambi) b.cambi = [];
+            b.cambi.push(cambio); b.cambi.sort((x,y) => x.battuta - y.battuta);
+            salva(); renderCambiSelezionato();
+        } else {
+            cambiTemporanei.push(cambio); cambiTemporanei.sort((x,y) => x.battuta - y.battuta);
+            renderCambi(cambiTemporanei, 'tempTcContainer', 'cambiTemporanei');
+        }
+    }
+    function testoCambio(c) { return `Battuta ${c.battuta} → ${c.bpm} BPM${c.rampa > 0 ? ` (graduale in ${c.rampa} batt.)` : ''}`; }
+    function renderCambi(lista, containerId, tipo) {
+        const container = document.getElementById(containerId);
+        if (!lista.length) { container.innerHTML = "Nessun cambio di tempo."; return; }
+        container.innerHTML = '';
+        lista.forEach((c, idx) => {
+            const div = document.createElement('div');
+            div.className = 'cmd-item';
+            div.innerHTML = `<span>⏱️ ${testoCambio(c)}</span> <span style="color:#ff2e63; cursor:pointer;" onclick="rimuoviCambio('${tipo}', ${idx})">❌</span>`;
+            container.appendChild(div);
+        });
+    }
+    function rimuoviCambio(tipo, idx) {
+        if (tipo === 'cambiTemporanei') { cambiTemporanei.splice(idx,1); renderCambi(cambiTemporanei, 'tempTcContainer', tipo); }
+        else { const b = scaletta.find(x => x.id === idSelezionato); if (b && b.cambi) { b.cambi.splice(idx,1); salva(); renderCambiSelezionato(); } }
+    }
+    function renderCambiSelezionato() { renderCambi(cambiDelBrano(), 'selTcContainer', 'selezionato'); }
+
+    // ===== TAP TEMPO =====
+    function tapTempo(e) {
+        if (e) e.preventDefault();
+        const ora = performance.now();
+        if (tapTimes.length && ora - tapTimes[tapTimes.length - 1] > 2000) tapTimes = [];
+        tapTimes.push(ora);
+        if (tapTimes.length > 4) tapTimes.shift();
+        const btn = document.getElementById('tapBtn');
+        btn.classList.add('flash'); setTimeout(() => btn.classList.remove('flash'), 90);
+        const info = document.getElementById('tapInfo');
+        if (tapTimes.length < 4) { info.innerText = `Tap ${tapTimes.length}/4...`; return; }
+        const media = (tapTimes[3] - tapTimes[0]) / 3;
+        const nuovo = Math.max(30, Math.min(300, Math.round(60000 / media)));
+        changeBpm(nuovo - currentBpm);
+        info.innerText = `BPM impostati: ${nuovo} (continua a toccare per affinare)`;
+    }
+
+    // ===== SUONI DEL CLICK =====
+    function salvaSuono() {
+        suonoTema = document.getElementById('soundTheme').value;
+        accentoOn = document.getElementById('accentOn').checked;
+        try { localStorage.setItem('suono_v37', suonoTema); localStorage.setItem('accento_v37', accentoOn ? '1' : '0'); } catch(e) {}
+    }
+    function provaSuono() {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const t = audioCtx.currentTime + 0.05, dt = 0.35;
+        for (let i = 0; i < 4; i++) suonaClick(t + i * dt, i === 0 && accentoOn);
+    }
+    let bufferRumore = null;
+    function rumore() {
+        if (bufferRumore && bufferRumore.sampleRate === audioCtx.sampleRate) return bufferRumore;
+        const len = Math.floor(audioCtx.sampleRate * 0.2);
+        bufferRumore = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+        const d = bufferRumore.getChannelData(0);
+        for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+        return bufferRumore;
+    }
+    function tono(time, freq, dur, vol, tipo, dest) {
+        const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+        o.type = tipo || 'sine'; o.frequency.setValueAtTime(freq, time);
+        g.gain.setValueAtTime(vol, time); g.gain.exponentialRampToValueAtTime(0.001, time + dur);
+        o.connect(g); g.connect(dest || audioCtx.destination);
+        o.start(time); o.stop(time + dur + 0.01);
+        return o;
+    }
+    function soffio(time, dur, vol, filtroTipo, freq, q) {
+        const s = audioCtx.createBufferSource(); s.buffer = rumore();
+        const f = audioCtx.createBiquadFilter(); f.type = filtroTipo; f.frequency.value = freq; if (q) f.Q.value = q;
+        const g = audioCtx.createGain();
+        g.gain.setValueAtTime(vol, time); g.gain.exponentialRampToValueAtTime(0.001, time + dur);
+        s.connect(f); f.connect(g); g.connect(audioCtx.destination);
+        s.start(time); s.stop(time + dur + 0.01);
+    }
+    function suonaClick(time, acc) {
+        const k = acc ? 1.4 : 1;
+        switch (suonoTema) {
+            case 'legno':
+                tono(time, acc ? 1100 : 800, 0.06, 0.5, 'sine');
+                tono(time, acc ? 2400 : 1800, 0.02, 0.15, 'triangle'); break;
+            case 'clave':
+                tono(time, acc ? 2900 : 2500, 0.05, 0.45, 'sine'); break;
+            case 'hihat':
+                soffio(time, acc ? 0.09 : 0.05, 0.4 * k, 'highpass', 7000); break;
+            case 'cowbell': {
+                const f = audioCtx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = acc ? 900 : 800; f.Q.value = 2;
+                f.connect(audioCtx.destination);
+                tono(time, acc ? 600 : 540, 0.25, 0.5, 'square', f);
+                tono(time, acc ? 900 : 810, 0.25, 0.5, 'square', f); break;
+            }
+            case 'rimshot':
+                tono(time, acc ? 500 : 420, 0.03, 0.4, 'triangle');
+                soffio(time, 0.04, 0.35 * k, 'bandpass', 2500, 1.5); break;
+            case 'soft':
+                tono(time, acc ? 880 : 660, 0.12, 0.25 * k, 'sine'); break;
+            default: // classico
+                tono(time, acc ? 1000 : 550, 0.05, 0.4, 'sine');
         }
     }
 </script>
